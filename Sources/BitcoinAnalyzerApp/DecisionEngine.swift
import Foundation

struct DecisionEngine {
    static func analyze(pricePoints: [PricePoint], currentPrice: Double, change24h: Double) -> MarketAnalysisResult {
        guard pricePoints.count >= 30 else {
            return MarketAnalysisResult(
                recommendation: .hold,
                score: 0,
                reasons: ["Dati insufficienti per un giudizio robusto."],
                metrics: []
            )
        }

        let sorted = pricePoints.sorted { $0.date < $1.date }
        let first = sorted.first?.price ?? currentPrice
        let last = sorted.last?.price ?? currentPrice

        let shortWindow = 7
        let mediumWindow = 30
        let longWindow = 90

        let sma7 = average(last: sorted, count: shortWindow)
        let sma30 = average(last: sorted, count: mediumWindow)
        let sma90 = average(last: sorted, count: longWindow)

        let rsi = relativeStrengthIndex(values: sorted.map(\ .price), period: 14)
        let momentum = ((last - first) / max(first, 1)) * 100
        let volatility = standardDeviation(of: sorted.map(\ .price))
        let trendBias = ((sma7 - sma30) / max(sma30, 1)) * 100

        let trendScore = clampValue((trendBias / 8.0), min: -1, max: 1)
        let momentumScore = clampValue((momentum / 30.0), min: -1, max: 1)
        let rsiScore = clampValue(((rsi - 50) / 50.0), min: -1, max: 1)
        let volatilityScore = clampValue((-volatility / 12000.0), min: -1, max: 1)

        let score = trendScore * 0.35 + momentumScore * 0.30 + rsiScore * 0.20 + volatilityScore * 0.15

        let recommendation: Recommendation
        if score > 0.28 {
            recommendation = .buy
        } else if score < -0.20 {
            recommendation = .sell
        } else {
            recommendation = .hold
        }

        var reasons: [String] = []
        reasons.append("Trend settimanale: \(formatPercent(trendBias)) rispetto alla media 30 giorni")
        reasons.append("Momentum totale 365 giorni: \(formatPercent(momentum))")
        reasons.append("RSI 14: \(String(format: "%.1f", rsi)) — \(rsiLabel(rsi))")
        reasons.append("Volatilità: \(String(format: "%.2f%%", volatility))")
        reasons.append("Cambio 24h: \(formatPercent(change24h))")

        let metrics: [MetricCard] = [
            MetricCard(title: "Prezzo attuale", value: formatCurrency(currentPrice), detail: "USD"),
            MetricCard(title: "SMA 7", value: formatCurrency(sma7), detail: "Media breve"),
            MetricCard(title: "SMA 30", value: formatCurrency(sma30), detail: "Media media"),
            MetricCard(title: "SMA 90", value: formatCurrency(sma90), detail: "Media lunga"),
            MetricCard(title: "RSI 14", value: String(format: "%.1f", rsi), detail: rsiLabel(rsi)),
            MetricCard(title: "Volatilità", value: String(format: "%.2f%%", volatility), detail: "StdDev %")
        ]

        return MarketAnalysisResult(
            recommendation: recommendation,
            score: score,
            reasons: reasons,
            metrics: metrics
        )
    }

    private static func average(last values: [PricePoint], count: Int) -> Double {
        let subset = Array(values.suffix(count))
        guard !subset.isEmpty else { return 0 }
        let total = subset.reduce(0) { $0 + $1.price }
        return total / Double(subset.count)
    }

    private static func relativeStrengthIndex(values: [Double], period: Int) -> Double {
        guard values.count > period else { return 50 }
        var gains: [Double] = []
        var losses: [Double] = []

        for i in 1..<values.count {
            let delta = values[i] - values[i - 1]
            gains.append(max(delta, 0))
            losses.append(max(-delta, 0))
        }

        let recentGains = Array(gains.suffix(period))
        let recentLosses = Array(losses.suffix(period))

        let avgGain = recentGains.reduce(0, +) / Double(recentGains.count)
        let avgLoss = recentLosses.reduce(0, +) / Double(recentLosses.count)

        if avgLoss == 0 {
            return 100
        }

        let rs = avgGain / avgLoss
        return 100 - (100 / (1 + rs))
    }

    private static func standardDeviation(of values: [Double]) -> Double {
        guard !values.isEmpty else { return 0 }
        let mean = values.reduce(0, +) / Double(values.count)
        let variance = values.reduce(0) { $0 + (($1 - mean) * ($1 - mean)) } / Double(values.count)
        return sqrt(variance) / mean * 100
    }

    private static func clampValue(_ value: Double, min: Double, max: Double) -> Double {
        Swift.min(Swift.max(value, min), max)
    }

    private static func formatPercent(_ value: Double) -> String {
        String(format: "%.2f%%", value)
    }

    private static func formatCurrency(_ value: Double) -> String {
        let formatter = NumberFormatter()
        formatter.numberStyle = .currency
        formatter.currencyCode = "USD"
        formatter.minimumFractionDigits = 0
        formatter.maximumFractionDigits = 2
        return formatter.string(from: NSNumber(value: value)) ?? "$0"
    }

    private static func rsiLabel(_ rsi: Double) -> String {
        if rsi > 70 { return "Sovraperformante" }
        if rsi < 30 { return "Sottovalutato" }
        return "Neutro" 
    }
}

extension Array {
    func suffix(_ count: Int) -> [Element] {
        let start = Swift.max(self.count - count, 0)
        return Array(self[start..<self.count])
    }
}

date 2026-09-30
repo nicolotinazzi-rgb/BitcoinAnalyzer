@@ -1,0 +1,75 @@
+import Foundation
+
+struct CoinGeckoMarketChartResponse: Decodable {
+    let prices: [[Double]]
+    let market_caps: [[Double]]
+    let total_volumes: [[Double]]
+}
+
+enum BitcoinDataError: LocalizedError {
+    case invalidURL
+    case invalidResponse
+    case invalidData
+    case decodeFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL:
+            return "URL non valida"
+        case .invalidResponse:
+            return "Risposta non valida dal server"
+        case .invalidData:
+            return "Dati mancanti"
+        case .decodeFailed:
+            return "Impossibile decodificare i dati"
+        }
+    }
+}
+
+struct BitcoinDataService {
+    static func fetchMarketSnapshot() async throws -> MarketSnapshot {
+        guard let url = URL(string: "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=365&interval=daily") else {
+            throw BitcoinDataError.invalidURL
+        }
+
+        let (data, response) = try await URLSession.shared.data(from: url)
+
+        guard let http = response as? HTTPURLResponse,
+              (200...299).contains(http.statusCode) else {
+            throw BitcoinDataError.invalidResponse
+        }
+
+        let chart = try JSONDecoder().decode(CoinGeckoMarketChartResponse.self, from: data)
+
+        let prices = chart.prices
+            .compactMap { item in
+                guard item.count >= 2 else { return nil }
+                let ts = item[0] / 1000
+                let val = item[1]
+                return PricePoint(date: Date(timeIntervalSince1970: ts), price: val)
+            }
+            .sorted { $0.date < $1.date }
+
+        guard !prices.isEmpty else {
+            throw BitcoinDataError.invalidData
+        }
+
+        let currentPrice = prices.last?.price ?? 0
+        let lastButOnePrice = prices.dropLast().last?.price ?? currentPrice
+        let change24h = ((currentPrice - lastButOnePrice) / max(lastButOnePrice, 1)) * 100
+
+        let marketCap = chart.market_caps.last?.last ?? currentPrice * 1_800_000
+        let volume24h = chart.total_volumes.last?.last ?? 0
+
+        let analysis = DecisionEngine.analyze(pricePoints: prices, currentPrice: currentPrice, change24h: change24h)
+
+        return MarketSnapshot(
+            currentPrice: currentPrice,
+            change24h: change24h,
+            marketCap: marketCap,
+            volume24h: volume24h,
+            pricePoints: prices,
+            analysis: analysis
+        )
+    }
+}

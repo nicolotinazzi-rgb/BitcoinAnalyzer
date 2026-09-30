@@ -1,0 +1,234 @@
+import Foundation
+import SwiftUI
+
+@MainActor
+final class MarketViewModel: ObservableObject {
+    @Published var snapshot: MarketSnapshot?
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+
+    init() {
+        Task {
+            await refresh()
+        }
+    }
+
+    func refresh() async {
+        isLoading = true
+        errorMessage = nil
+
+        do {
+            let data = try await BitcoinDataService.fetchMarketSnapshot()
+            snapshot = data
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+
+        isLoading = false
+    }
+}
+
+struct ContentView: View {
+    @ObservedObject var viewModel: MarketViewModel
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            if let snapshot = viewModel.snapshot {
+                ScrollView {
+                    VStack(spacing: 22) {
+                        header(snapshot: snapshot)
+                        chartSection(snapshot: snapshot)
+                        metricsSection(metrics: snapshot.analysis.metrics)
+                        reasoningSection(reasons: snapshot.analysis.reasons)
+                    }
+                    .padding(20)
+                }
+            } else {
+                VStack(spacing: 18) {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                    Text(viewModel.errorMessage ?? "Caricamento dati Bitcoin...")
+                        .foregroundStyle(.white)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .task {
+            await viewModel.refresh()
+        }
+    }
+
+    private func header(snapshot: MarketSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading) {
+                    Text("Bitcoin Analyzer")
+                        .font(.largeTitle.bold())
+                        .foregroundStyle(.white)
+                    Text("Valutazione statistica e grafico decisionale")
+                        .font(.subheadline)
+                        .foregroundStyle(.gray)
+                }
+
+                Spacer()
+
+                Button(action: {
+                    Task { await viewModel.refresh() }
+                }) {
+                    Label("Aggiorna", systemImage: "arrow.clockwise")
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(.orange)
+                        .clipShape(Capsule())
+                        .foregroundStyle(.black)
+                }
+                .buttonStyle(.plain)
+            }
+
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Prezzo")
+                        .font(.caption)
+                        .foregroundStyle(.gray)
+                    Text(formatCurrency(snapshot.currentPrice))
+                        .font(.title2.bold())
+                        .foregroundStyle(.white)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("24h")
+                        .font(.caption)
+                        .foregroundStyle(.gray)
+                    Text(formatPercent(snapshot.change24h))
+                        .font(.title3.bold())
+                        .foregroundStyle(snapshot.change24h >= 0 ? .green : .red)
+                }
+
+                Spacer()
+
+                VStack(alignment: .trailing, spacing: 6) {
+                    Text("Decisione")
+                        .font(.caption)
+                        .foregroundStyle(.gray)
+                    Text(snapshot.analysis.recommendation.rawValue)
+                        .font(.title2.bold())
+                        .foregroundStyle(colorForRecommendation(snapshot.analysis.recommendation))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(colorForRecommendation(snapshot.analysis.recommendation).opacity(0.12))
+                        .clipShape(Capsule())
+                }
+            }
+        }
+        .padding(18)
+        .background(RoundedRectangle(cornerRadius: 18).fill(Color(white: 0.08)))
+    }
+
+    private func chartSection(snapshot: MarketSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Grafico BTC / USD")
+                .font(.headline)
+                .foregroundStyle(.white)
+
+            PriceChartView(points: snapshot.pricePoints)
+                .frame(height: 260)
+                .background(RoundedRectangle(cornerRadius: 18).fill(Color(white: 0.08)))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18)
+                        .stroke(Color(white: 0.18), lineWidth: 1)
+                )
+        }
+    }
+
+    private func metricsSection(metrics: [MetricCard]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Analisi statistiche")
+                .font(.headline)
+                .foregroundStyle(.white)
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150))], spacing: 12) {
+                ForEach(metrics) { metric in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(metric.title)
+                            .font(.caption)
+                            .foregroundStyle(.gray)
+                        Text(metric.value)
+                            .font(.title3.bold())
+                            .foregroundStyle(.white)
+                        Text(metric.detail)
+                            .font(.caption2)
+                            .foregroundStyle(.gray)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(RoundedRectangle(cornerRadius: 14).fill(Color(white: 0.08)))
+                }
+            }
+        }
+    }
+
+    private func reasoningSection(reasons: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Ragionamenti svolti")
+                .font(.headline)
+                .foregroundStyle(.white)
+
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(reasons.indices, id: \ .self) { index in
+                    HStack(alignment: .top, spacing: 10) {
+                        Circle()
+                            .fill(colorForRecommendation(.buy))
+                            .frame(width: 8, height: 8)
+                            .padding(.top, 8)
+                        Text(reasons[index])
+                            .foregroundStyle(.white.opacity(0.9))
+                            .font(.body)
+                    }
+                }
+            }
+            .padding(14)
+            .background(RoundedRectangle(cornerRadius: 16).fill(Color(white: 0.08)))
+        }
+    }
+
+    private func formatCurrency(_ value: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.maximumFractionDigits = 2
+        formatter.locale = Locale(identifier: "en_US")
+        return formatter.string(from: NSNumber(value: value)) ?? "$0"
+    }
+
+    private func formatPercent(_ value: Double) -> String {
+        String(format: "%+.2f%%", value)
+    }
+
+    private func colorForRecommendation(_ recommendation: Recommendation) -> Color {
+        switch recommendation {
+        case .buy:
+            return .green
+        case .hold:
+            return .orange
+        case .sell:
+            return .red
+        }
+    }
+}
+
+struct BitcoinAnalyzerApp: App {
+    @StateObject private var viewModel = MarketViewModel()
+
+    var body: some Scene {
+        WindowGroup {
+            ContentView(viewModel: viewModel)
+                .frame(minWidth: 1100, minHeight: 780)
+        }
+    }
+}
+
+#Preview {
+    ContentView(viewModel: MarketViewModel())
+        .frame(width: 1200, height: 800)
+}
